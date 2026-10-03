@@ -8,6 +8,8 @@ import type { Leaf } from '@/types/leaf'
 import type { Paper } from '@/types/paper'
 import type { RepairOrder } from '@/types/repairOrder'
 import type { Binding } from '@/types/binding'
+import type { DyeBatch } from '@/types/dyeBatch'
+import type { PaperUsage } from '@/types/paperUsage'
 import { BOOK_LEVEL_LABEL } from '@/types/book'
 import { BINDING_TYPE_LABEL, VOLUME_STATE_LABEL } from '@/types/volume'
 import { DAMAGE_TYPE_LABEL, LEAF_STATE_LABEL } from '@/types/leaf'
@@ -55,6 +57,8 @@ export interface ExportContext {
   papers: Paper[]
   repairOrders: RepairOrder[]
   bindings: Binding[]
+  dyeBatches: DyeBatch[]
+  paperUsages: PaperUsage[]
 }
 
 /** 验收归档清单文本：按古籍 → 册次 → 书叶 → 工序展开 */
@@ -94,6 +98,24 @@ export function buildArchiveReport(context: ExportContext): string {
     })
     lines.push('')
   })
+  // 染色间浴次台账：容量 / 已领（净）/ 余量，余量为负即超量（对账挂起）
+  lines.push('补纸染色浴次台账')
+  if (context.dyeBatches.length === 0) {
+    lines.push('   （暂无浴次）')
+  } else {
+    const sorted = [...context.dyeBatches].sort((a, b) => a.seq - b.seq)
+    sorted.forEach((batch) => {
+      const used = context.paperUsages
+        .filter((usage) => usage.batchId === batch.id && usage.state === 'active')
+        .reduce((sum, usage) => sum + (usage.count - usage.returnedCount), 0)
+      const queued = context.paperUsages.filter(
+        (usage) => usage.state === 'queued' && usage.paperType === batch.paperType
+      ).length
+      lines.push(
+        `   第 ${batch.seq} 浴　${PAPER_TYPE_LABEL[batch.paperType]}　容量 ${batch.capacity} 张　已领 ${used} 张　余 ${batch.capacity - used} 张${batch.source === 'backfill' ? '　历史回填' : ''}${queued > 0 ? `　排队 ${queued} 笔` : ''}`
+      )
+    })
+  }
   return lines.join('\n')
 }
 

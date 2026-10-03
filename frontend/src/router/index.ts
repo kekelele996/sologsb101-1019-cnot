@@ -1,6 +1,6 @@
 /**
- * 路由表（与提示词逐字一致）
- * /books、/books/:id/leaves、/papers、/repairs、/export
+ * 路由表
+ * /books、/books/:id/leaves、/papers、/dyeing、/repairs、/export
  */
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 
@@ -26,6 +26,12 @@ const routes: RouteRecordRaw[] = [
     name: 'paper-match',
     component: () => import('@/pages/PaperMatch.vue'),
     meta: { title: '补纸选配与染色', icon: 'Brush' }
+  },
+  {
+    path: '/dyeing',
+    name: 'dye-ledger',
+    component: () => import('@/pages/DyeLedger.vue'),
+    meta: { title: '染色与领用对账', icon: 'Notebook' }
   },
   {
     path: '/repairs',
