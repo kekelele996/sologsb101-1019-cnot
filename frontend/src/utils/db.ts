@@ -1,7 +1,10 @@
 /**
  * IndexedDB 持久化层（Dexie 封装）
- * - 数据结构版本号与升级迁移逻辑（v1 → v2：Paper 增加 dyeRecipe 字段并按纸种回填默认配方）
- * - 六张业务表的增删改查与整库导入导出
+ * - 数据结构版本号与升级迁移逻辑
+ *   v1 → v2：Paper 增加 dyeRecipe 字段并按纸种回填默认配方
+ *   v2 → v3：染色浴次账（dyeBaths）+ 工位领用账（leafIssuances），
+ *            旧补纸数据没有浴次归属，按纸种回填为历史浴次后再启用
+ * - 八张业务表的增删改查与整库导入导出
  * - 首次打开自动播种三层互相引用的演示数据（幂等）
  * 纯前端应用：不依赖任何后端服务或数据库。
  */
@@ -9,15 +12,17 @@ import Dexie, { type Table } from 'dexie'
 import type { Book } from '@/types/book'
 import type { Volume } from '@/types/volume'
 import type { Leaf } from '@/types/leaf'
-import { DEFAULT_DYE_RECIPE, type Paper } from '@/types/paper'
+import { DEFAULT_DYE_RECIPE, type Paper, type PaperType } from '@/types/paper'
 import type { RepairOrder } from '@/types/repairOrder'
 import type { Binding } from '@/types/binding'
+import { LEGACY_BATH_ID, legacyBathNo, type DyeBath } from '@/types/dyeBath'
+import type { LeafIssuance } from '@/types/leafIssuance'
 
 /** 数据库名（README 与导出文件均使用该名称） */
 export const DB_NAME = 'gbbookrestore'
 
 /** 当前数据结构版本号 */
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
 /** localStorage 侧少量元数据键 */
 export const LS_KEYS = {
@@ -88,6 +93,8 @@ export class BookRestoreDatabase extends Dexie {
   papers!: Table<Paper, string>
   repairOrders!: Table<RepairOrder, string>
   bindings!: Table<Binding, string>
+  dyeBaths!: Table<DyeBath, string>
+  leafIssuances!: Table<LeafIssuance, string>
 
   constructor() {
     super(DB_NAME)
@@ -101,7 +108,7 @@ export class BookRestoreDatabase extends Dexie {
       bindings: 'id, volumeId, verdict, finishDate, updatedAt'
     })
     // v2：Paper 增加 dyeRecipe 字段，按纸种为历史记录回填默认配方
-    this.version(DB_VERSION)
+    this.version(2)
       .stores({
         books: 'id, title, era, level, collectionNo, updatedAt',
         volumes: 'id, bookId, volumeNo, bindingType, state, updatedAt',
@@ -120,6 +127,42 @@ export class BookRestoreDatabase extends Dexie {
             }
             if (typeof paper.deltaE !== 'number') paper.deltaE = 2
             if (typeof paper.thicknessMm !== 'number') paper.thicknessMm = 0.06
+          })
+      })
+    // v3：染色间浴次账 + 修复工位领用账；旧补纸没有浴次归属，按纸种回填为历史浴次再启用
+    this.version(DB_VERSION)
+      .stores({
+        books: 'id, title, era, level, collectionNo, updatedAt',
+        volumes: 'id, bookId, volumeNo, bindingType, state, updatedAt',
+        leaves: 'id, volumeId, leafNo, damageType, phValue, state, updatedAt',
+        papers: 'id, leafId, paperType, laidPattern, deltaE, bathId, updatedAt',
+        repairOrders: 'id, leafId, seq, name, operator, state, updatedAt',
+        bindings: 'id, volumeId, method, verdict, finishDate, updatedAt',
+        dyeBaths: 'id, bathNo, paperType, state, updatedAt',
+        leafIssuances: 'id, leafId, bathId, purpose, state, updatedAt'
+      })
+      .upgrade(async (tx) => {
+        // 先按纸种建三口历史缸：旧补纸统一回填到对应历史浴次，启用后只入新缸
+        const now = Date.now()
+        const legacyBaths: DyeBath[] = (['bamboo', 'bark', 'xuan'] as PaperType[]).map((paperType) => ({
+          id: LEGACY_BATH_ID[paperType],
+          bathNo: legacyBathNo(paperType),
+          paperType,
+          recipe: DEFAULT_DYE_RECIPE[paperType],
+          capacity: 0,
+          startDate: '',
+          dyer: '历史回填',
+          state: 'legacy',
+          legacy: true,
+          createdAt: now,
+          updatedAt: now
+        }))
+        await tx.table<DyeBath>('dyeBaths').bulkPut(legacyBaths)
+        await tx
+          .table<Paper>('papers')
+          .toCollection()
+          .modify((paper) => {
+            paper.bathId = LEGACY_BATH_ID[paper.paperType] ?? LEGACY_BATH_ID.bamboo
           })
       })
   }
@@ -204,11 +247,44 @@ export async function seedDatabase(): Promise<void> {
   ]
 
   const papers: Paper[] = [
-    { id: 'paper_0101', leafId: 'leaf_010101', paperType: 'bamboo', laidPattern: '二指帘纹', thicknessMm: 0.06, deltaE: 1.4, dyeRecipe: DEFAULT_DYE_RECIPE.bamboo, createdAt: now - day * 15, updatedAt: now - day * 15 },
-    { id: 'paper_0102', leafId: 'leaf_010101', paperType: 'bark', laidPattern: '二指帘纹', thicknessMm: 0.07, deltaE: 3.6, dyeRecipe: DEFAULT_DYE_RECIPE.bark, createdAt: now - day * 15, updatedAt: now - day * 15 },
-    { id: 'paper_0103', leafId: 'leaf_010102', paperType: 'xuan', laidPattern: '细帘纹', thicknessMm: 0.05, deltaE: 2.1, dyeRecipe: DEFAULT_DYE_RECIPE.xuan, createdAt: now - day * 12, updatedAt: now - day * 12 },
-    { id: 'paper_0201', leafId: 'leaf_020101', paperType: 'bamboo', laidPattern: '三指帘纹', thicknessMm: 0.06, deltaE: 0.9, dyeRecipe: DEFAULT_DYE_RECIPE.bamboo, createdAt: now - day * 20, updatedAt: now - day * 20 },
-    { id: 'paper_0301', leafId: 'leaf_030101', paperType: 'bark', laidPattern: '二指帘纹', thicknessMm: 0.08, deltaE: 5.2, dyeRecipe: DEFAULT_DYE_RECIPE.bark, createdAt: now - day * 45, updatedAt: now - day * 45 }
+    { id: 'paper_0101', leafId: 'leaf_010101', paperType: 'bamboo', laidPattern: '二指帘纹', thicknessMm: 0.06, deltaE: 1.4, dyeRecipe: DEFAULT_DYE_RECIPE.bamboo, bathId: 'bath_bamboo_01', createdAt: now - day * 15, updatedAt: now - day * 15 },
+    { id: 'paper_0102', leafId: 'leaf_010101', paperType: 'bark', laidPattern: '二指帘纹', thicknessMm: 0.07, deltaE: 3.6, dyeRecipe: DEFAULT_DYE_RECIPE.bark, bathId: '', createdAt: now - day * 15, updatedAt: now - day * 15 },
+    { id: 'paper_0103', leafId: 'leaf_010102', paperType: 'xuan', laidPattern: '细帘纹', thicknessMm: 0.05, deltaE: 2.1, dyeRecipe: DEFAULT_DYE_RECIPE.xuan, bathId: 'bath_xuan_01', createdAt: now - day * 12, updatedAt: now - day * 12 },
+    { id: 'paper_0201', leafId: 'leaf_020101', paperType: 'bamboo', laidPattern: '三指帘纹', thicknessMm: 0.06, deltaE: 0.9, dyeRecipe: DEFAULT_DYE_RECIPE.bamboo, bathId: 'bath_legacy_bamboo', createdAt: now - day * 20, updatedAt: now - day * 20 },
+    { id: 'paper_0301', leafId: 'leaf_030101', paperType: 'bark', laidPattern: '二指帘纹', thicknessMm: 0.08, deltaE: 5.2, dyeRecipe: DEFAULT_DYE_RECIPE.bark, bathId: 'bath_bark_01', createdAt: now - day * 45, updatedAt: now - day * 45 },
+    { id: 'paper_0202', leafId: 'leaf_020102', paperType: 'bamboo', laidPattern: '二指帘纹', thicknessMm: 0.06, deltaE: 1.8, dyeRecipe: DEFAULT_DYE_RECIPE.bamboo, bathId: 'bath_bamboo_02', createdAt: now - day * 9, updatedAt: now - day * 9 },
+    { id: 'paper_0104', leafId: 'leaf_010103', paperType: 'xuan', laidPattern: '细帘纹', thicknessMm: 0.05, deltaE: 2.8, dyeRecipe: DEFAULT_DYE_RECIPE.xuan, bathId: '', createdAt: now - day * 6, updatedAt: now - day * 6 }
+  ]
+
+  const dyeBaths: DyeBath[] = [
+    // 启用浴次账之前按纸种回填的三口历史缸（旧补纸的浴次归属）
+    { id: 'bath_legacy_bamboo', bathNo: '竹-旧', paperType: 'bamboo', recipe: DEFAULT_DYE_RECIPE.bamboo, capacity: 0, startDate: '', dyer: '历史回填', state: 'legacy', legacy: true, createdAt: now - day * 45, updatedAt: now - day * 45 },
+    { id: 'bath_legacy_bark', bathNo: '皮-旧', paperType: 'bark', recipe: DEFAULT_DYE_RECIPE.bark, capacity: 0, startDate: '', dyer: '历史回填', state: 'legacy', legacy: true, createdAt: now - day * 45, updatedAt: now - day * 45 },
+    { id: 'bath_legacy_xuan', bathNo: '宣-旧', paperType: 'xuan', recipe: DEFAULT_DYE_RECIPE.xuan, capacity: 0, startDate: '', dyer: '历史回填', state: 'legacy', legacy: true, createdAt: now - day * 45, updatedAt: now - day * 45 },
+    // 启用后的新缸：竹-01 已到顶、竹-02 在染、皮-01 染坏退回后余量回补、宣-01 在染
+    { id: 'bath_bamboo_01', bathNo: '竹-01', paperType: 'bamboo', recipe: DEFAULT_DYE_RECIPE.bamboo, capacity: 2, startDate: '2026-09-18', dyer: '染工 周禾', state: 'full', legacy: false, createdAt: now - day * 15, updatedAt: now - day * 10 },
+    { id: 'bath_bamboo_02', bathNo: '竹-02', paperType: 'bamboo', recipe: DEFAULT_DYE_RECIPE.bamboo, capacity: 12, startDate: '2026-09-24', dyer: '染工 周禾', state: 'active', legacy: false, createdAt: now - day * 9, updatedAt: now - day * 9 },
+    { id: 'bath_bark_01', bathNo: '皮-01', paperType: 'bark', recipe: DEFAULT_DYE_RECIPE.bark, capacity: 8, startDate: '2026-08-20', dyer: '染工 周禾', state: 'active', legacy: false, createdAt: now - day * 44, updatedAt: now - day * 40 },
+    { id: 'bath_xuan_01', bathNo: '宣-01', paperType: 'xuan', recipe: DEFAULT_DYE_RECIPE.xuan, capacity: 3, startDate: '2026-09-21', dyer: '染工 林染', state: 'active', legacy: false, createdAt: now - day * 12, updatedAt: now - day * 12 }
+  ]
+
+  const leafIssuances: LeafIssuance[] = [
+    // 竹-01 已用罄：两张均耗用
+    { id: 'iss_010101', leafId: 'leaf_010101', bathId: 'bath_bamboo_01', sheets: 1, purpose: 'mend', state: 'issued', queueNote: '', returnedSheets: 0, returnReason: '', receiver: '沈玉', date: '2026-09-19', reissueOfId: '', createdAt: now - day * 14, updatedAt: now - day * 13 },
+    { id: 'iss_030102', leafId: 'leaf_030102', bathId: 'bath_bamboo_01', sheets: 1, purpose: 'mend', state: 'used', queueNote: '', returnedSheets: 0, returnReason: '', receiver: '沈玉', date: '2026-09-20', reissueOfId: '', createdAt: now - day * 13, updatedAt: now - day * 10 },
+    // 竹-02 在染：第 11 叶领用后已耗用
+    { id: 'iss_020102', leafId: 'leaf_020102', bathId: 'bath_bamboo_02', sheets: 1, purpose: 'mend', state: 'used', queueNote: '', returnedSheets: 0, returnReason: '', receiver: '陆敏', date: '2026-09-25', reissueOfId: '', createdAt: now - day * 8, updatedAt: now - day * 7 },
+    // 宣-01：第 8 叶领用中
+    { id: 'iss_010102', leafId: 'leaf_010102', bathId: 'bath_xuan_01', sheets: 1, purpose: 'mend', state: 'issued', queueNote: '', returnedSheets: 0, returnReason: '', receiver: '陆敏', date: '2026-09-22', reissueOfId: '', createdAt: now - day * 11, updatedAt: now - day * 11 },
+    // 皮-01：染坏整额退回、按余量重算后由沈玉重领重记（演示两本账对得上的正常退回）
+    { id: 'iss_030101_r', leafId: 'leaf_030101', bathId: 'bath_bark_01', sheets: 2, purpose: 'mend', state: 'returned', queueNote: '', returnedSheets: 2, returnReason: '色花不匀，整批染坏', receiver: '沈玉', date: '2026-08-22', reissueOfId: '', createdAt: now - day * 42, updatedAt: now - day * 41 },
+    { id: 'iss_030101', leafId: 'leaf_030101', bathId: 'bath_bark_01', sheets: 2, purpose: 'mount', state: 'used', queueNote: '', returnedSheets: 0, returnReason: '', receiver: '沈玉', date: '2026-08-24', reissueOfId: 'iss_030101_r', createdAt: now - day * 40, updatedAt: now - day * 38 },
+    // 竹-01 到顶后新领用先排队等下一缸（竹-02 已开缸，可在此补排）
+    { id: 'iss_010101_q', leafId: 'leaf_010101', bathId: '', sheets: 1, purpose: 'press', state: 'queued', queueNote: '竹-01 容量到顶，排队等下一缸', returnedSheets: 0, returnReason: '', receiver: '沈玉', date: '2026-09-21', reissueOfId: '', createdAt: now - day * 12, updatedAt: now - day * 12 },
+    // 对账挂起演示：第 8 叶水渍配的是宣纸，工位却记成皮-01（纸种不符），该册挂起待重记
+    { id: 'iss_010103_bad', leafId: 'leaf_010103', bathId: 'bath_bark_01', sheets: 1, purpose: 'mend', state: 'issued', queueNote: '', returnedSheets: 0, returnReason: '', receiver: '陆敏', date: '2026-09-26', reissueOfId: '', createdAt: now - day * 7, updatedAt: now - day * 7 },
+    // 宣纸余量不足：第 8 叶水渍还要 3 张，宣-01 只剩 2 张，排队等下一缸
+    { id: 'iss_010103_q', leafId: 'leaf_010103', bathId: '', sheets: 3, purpose: 'mount', state: 'queued', queueNote: '宣-01 余量不足，排队等下一缸宣', returnedSheets: 0, returnReason: '', receiver: '陆敏', date: '2026-09-27', reissueOfId: '', createdAt: now - day * 6, updatedAt: now - day * 6 }
   ]
 
   const repairOrders: RepairOrder[] = [
@@ -232,7 +308,7 @@ export async function seedDatabase(): Promise<void> {
 
   await db.transaction(
     'rw',
-    [db.books, db.volumes, db.leaves, db.papers, db.repairOrders, db.bindings],
+    [db.books, db.volumes, db.leaves, db.papers, db.repairOrders, db.bindings, db.dyeBaths, db.leafIssuances],
     async () => {
       await db.books.bulkPut(books)
       await db.volumes.bulkPut(volumes)
@@ -240,6 +316,8 @@ export async function seedDatabase(): Promise<void> {
       await db.papers.bulkPut(papers)
       await db.repairOrders.bulkPut(repairOrders)
       await db.bindings.bulkPut(bindings)
+      await db.dyeBaths.bulkPut(dyeBaths)
+      await db.leafIssuances.bulkPut(leafIssuances)
     }
   )
 }
@@ -256,16 +334,20 @@ export interface RestoreSnapshot {
   papers: Paper[]
   repairOrders: RepairOrder[]
   bindings: Binding[]
+  dyeBaths: DyeBath[]
+  leafIssuances: LeafIssuance[]
 }
 
 export async function exportSnapshot(): Promise<RestoreSnapshot> {
-  const [books, volumes, leaves, papers, repairOrders, bindings] = await Promise.all([
+  const [books, volumes, leaves, papers, repairOrders, bindings, dyeBaths, leafIssuances] = await Promise.all([
     db.books.toArray(),
     db.volumes.toArray(),
     db.leaves.toArray(),
     db.papers.toArray(),
     db.repairOrders.toArray(),
-    db.bindings.toArray()
+    db.bindings.toArray(),
+    db.dyeBaths.toArray(),
+    db.leafIssuances.toArray()
   ])
   return {
     app: DB_NAME,
@@ -276,7 +358,9 @@ export async function exportSnapshot(): Promise<RestoreSnapshot> {
     leaves,
     papers,
     repairOrders,
-    bindings
+    bindings,
+    dyeBaths,
+    leafIssuances
   }
 }
 
@@ -291,7 +375,9 @@ export function validateSnapshot(input: unknown): string {
     'leaves',
     'papers',
     'repairOrders',
-    'bindings'
+    'bindings',
+    'dyeBaths',
+    'leafIssuances'
   ]
   for (const key of keys) {
     if (!Array.isArray(snapshot[key])) return `备份文件缺少 ${String(key)} 集合`
@@ -302,7 +388,7 @@ export function validateSnapshot(input: unknown): string {
 export async function importSnapshot(snapshot: RestoreSnapshot): Promise<void> {
   await db.transaction(
     'rw',
-    [db.books, db.volumes, db.leaves, db.papers, db.repairOrders, db.bindings],
+    [db.books, db.volumes, db.leaves, db.papers, db.repairOrders, db.bindings, db.dyeBaths, db.leafIssuances],
     async () => {
       await Promise.all([
         db.books.clear(),
@@ -310,7 +396,9 @@ export async function importSnapshot(snapshot: RestoreSnapshot): Promise<void> {
         db.leaves.clear(),
         db.papers.clear(),
         db.repairOrders.clear(),
-        db.bindings.clear()
+        db.bindings.clear(),
+        db.dyeBaths.clear(),
+        db.leafIssuances.clear()
       ])
       await db.books.bulkPut(snapshot.books)
       await db.volumes.bulkPut(snapshot.volumes)
@@ -318,6 +406,8 @@ export async function importSnapshot(snapshot: RestoreSnapshot): Promise<void> {
       await db.papers.bulkPut(snapshot.papers)
       await db.repairOrders.bulkPut(snapshot.repairOrders)
       await db.bindings.bulkPut(snapshot.bindings)
+      await db.dyeBaths.bulkPut(snapshot.dyeBaths)
+      await db.leafIssuances.bulkPut(snapshot.leafIssuances)
     }
   )
 }
@@ -325,7 +415,7 @@ export async function importSnapshot(snapshot: RestoreSnapshot): Promise<void> {
 export async function clearAllTables(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.books, db.volumes, db.leaves, db.papers, db.repairOrders, db.bindings],
+    [db.books, db.volumes, db.leaves, db.papers, db.repairOrders, db.bindings, db.dyeBaths, db.leafIssuances],
     async () => {
       await Promise.all([
         db.books.clear(),
@@ -333,7 +423,9 @@ export async function clearAllTables(): Promise<void> {
         db.leaves.clear(),
         db.papers.clear(),
         db.repairOrders.clear(),
-        db.bindings.clear()
+        db.bindings.clear(),
+        db.dyeBaths.clear(),
+        db.leafIssuances.clear()
       ])
     }
   )
@@ -345,18 +437,20 @@ export async function resetDatabase(): Promise<void> {
 }
 
 export async function countAll(): Promise<Record<string, number>> {
-  const [books, volumes, leaves, papers, repairOrders, bindings] = await Promise.all([
+  const [books, volumes, leaves, papers, repairOrders, bindings, dyeBaths, leafIssuances] = await Promise.all([
     db.books.count(),
     db.volumes.count(),
     db.leaves.count(),
     db.papers.count(),
     db.repairOrders.count(),
-    db.bindings.count()
+    db.bindings.count(),
+    db.dyeBaths.count(),
+    db.leafIssuances.count()
   ])
-  return { books, volumes, leaves, papers, repairOrders, bindings }
+  return { books, volumes, leaves, papers, repairOrders, bindings, dyeBaths, leafIssuances }
 }
 
-/** 级联删除古籍 → 册次 → 书叶 → 补纸 / 工序 / 装订 */
+/** 级联删除古籍 → 册次 → 书叶 → 补纸 / 工序 / 装订 / 领用账（染色间浴次账不动） */
 export async function removeBookCascade(bookId: string): Promise<void> {
   const volumeIds = (await db.volumes.where('bookId').equals(bookId).toArray()).map((row) => row.id)
   const leafIds = volumeIds.length
@@ -364,11 +458,12 @@ export async function removeBookCascade(bookId: string): Promise<void> {
     : []
   await db.transaction(
     'rw',
-    [db.books, db.volumes, db.leaves, db.papers, db.repairOrders, db.bindings],
+    [db.books, db.volumes, db.leaves, db.papers, db.repairOrders, db.bindings, db.leafIssuances],
     async () => {
       if (leafIds.length > 0) {
         await db.papers.where('leafId').anyOf(leafIds).delete()
         await db.repairOrders.where('leafId').anyOf(leafIds).delete()
+        await db.leafIssuances.where('leafId').anyOf(leafIds).delete()
       }
       if (volumeIds.length > 0) {
         await db.leaves.where('volumeId').anyOf(volumeIds).delete()
@@ -380,16 +475,17 @@ export async function removeBookCascade(bookId: string): Promise<void> {
   )
 }
 
-/** 级联删除册次 → 书叶 → 补纸 / 工序 / 装订 */
+/** 级联删除册次 → 书叶 → 补纸 / 工序 / 装订 / 领用账（染色间浴次账不动） */
 export async function removeVolumeCascade(volumeId: string): Promise<void> {
   const leafIds = (await db.leaves.where('volumeId').equals(volumeId).toArray()).map((row) => row.id)
   await db.transaction(
     'rw',
-    [db.volumes, db.leaves, db.papers, db.repairOrders, db.bindings],
+    [db.volumes, db.leaves, db.papers, db.repairOrders, db.bindings, db.leafIssuances],
     async () => {
       if (leafIds.length > 0) {
         await db.papers.where('leafId').anyOf(leafIds).delete()
         await db.repairOrders.where('leafId').anyOf(leafIds).delete()
+        await db.leafIssuances.where('leafId').anyOf(leafIds).delete()
       }
       await db.leaves.where('volumeId').equals(volumeId).delete()
       await db.bindings.where('volumeId').equals(volumeId).delete()
@@ -398,11 +494,12 @@ export async function removeVolumeCascade(volumeId: string): Promise<void> {
   )
 }
 
-/** 级联删除书叶 → 补纸 / 工序 */
+/** 级联删除书叶 → 补纸 / 工序 / 领用账 */
 export async function removeLeafCascade(leafId: string): Promise<void> {
-  await db.transaction('rw', [db.leaves, db.papers, db.repairOrders], async () => {
+  await db.transaction('rw', [db.leaves, db.papers, db.repairOrders, db.leafIssuances], async () => {
     await db.papers.where('leafId').equals(leafId).delete()
     await db.repairOrders.where('leafId').equals(leafId).delete()
+    await db.leafIssuances.where('leafId').equals(leafId).delete()
     await db.leaves.delete(leafId)
   })
 }

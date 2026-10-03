@@ -14,6 +14,7 @@ import StatBadge from '@/components/common/StatBadge.vue'
 import { useIdbTable } from '@/hooks/useIdbTable'
 import { useBookStore } from '@/stores/bookStore'
 import { useLeafStore } from '@/stores/leafStore'
+import { useDyeStore } from '@/stores/dyeStore'
 import {
   DEFAULT_DYE_RECIPE,
   DELTA_E_THRESHOLD,
@@ -38,6 +39,7 @@ import {
 
 const bookStore = useBookStore()
 const leafStore = useLeafStore()
+const dyeStore = useDyeStore()
 const paperTable = useIdbTable<Paper>((database) => database.papers, { sortByUpdatedAt: false })
 
 const FILTER_KEYS = ['paperType', 'laidPattern'] as const
@@ -75,6 +77,21 @@ function leafPattern(leafId: string): string {
   const leaf = leafStore.leafById(leafId)
   if (!leaf) return '二指帘纹'
   return leaf.damageType === 'stain' ? '细帘纹' : '二指帘纹'
+}
+
+/** 浴次号 + 状态文案（浴次在「浴次领用」页开缸与领用，这里只读展示） */
+function bathText(bathId: string): string {
+  if (!bathId) return '尚未入缸'
+  const bath = dyeStore.bathById(bathId)
+  return bath ? bath.bathNo : '浴次缺失'
+}
+
+function bathTagType(bathId: string): 'info' | 'success' | 'warning' | 'danger' {
+  if (!bathId) return 'info'
+  const bath = dyeStore.bathById(bathId)
+  if (!bath) return 'danger'
+  if (bath.legacy) return 'warning'
+  return bath.state === 'active' ? 'success' : 'info'
 }
 
 const rows = computed(() => {
@@ -153,7 +170,8 @@ function openEdit(paper: Paper): void {
     laidPattern: paper.laidPattern,
     thicknessMm: paper.thicknessMm,
     deltaE: paper.deltaE,
-    dyeRecipe: paper.dyeRecipe
+    dyeRecipe: paper.dyeRecipe,
+    bathId: paper.bathId ?? ''
   })
   dialog.value = true
 }
@@ -243,7 +261,8 @@ async function selectCandidate(type: PaperType, deltaE: number, laidPatternValue
     laidPattern: laidPatternValue,
     thicknessMm,
     deltaE,
-    dyeRecipe: DEFAULT_DYE_RECIPE[type]
+    dyeRecipe: DEFAULT_DYE_RECIPE[type],
+    bathId: existing?.bathId ?? ''
   }
   if (existing) {
     await paperTable.update(existing.id, payload)
@@ -322,6 +341,13 @@ function deltaTag(deltaE: number): { label: string; color: string } {
             </el-table-column>
             <el-table-column label="纸种" width="90">
               <template #default="{ row }">{{ PAPER_TYPE_LABEL[row.paperType as PaperType] }}</template>
+            </el-table-column>
+            <el-table-column label="浴次" width="110">
+              <template #default="{ row }">
+                <el-tag :type="bathTagType(row.bathId ?? '')" effect="plain" size="small" round>
+                  {{ bathText(row.bathId ?? '') }}
+                </el-tag>
+              </template>
             </el-table-column>
             <el-table-column label="帘纹" width="150">
               <template #default="{ row }">
@@ -434,6 +460,10 @@ function deltaTag(deltaE: number): { label: string; color: string } {
         <el-form-item label="染色配方">
           <el-input v-model="form.dyeRecipe" type="textarea" :rows="2" />
           <span class="gb-muted">{{ recipePreview.note }}</span>
+        </el-form-item>
+        <el-form-item label="所属浴次">
+          <el-tag :type="bathTagType(form.bathId)" effect="plain" round>{{ bathText(form.bathId) }}</el-tag>
+          <span class="gb-muted" style="margin-left: 8px">浴次在「浴次领用」页开缸领用，本页不直接改归属</span>
         </el-form-item>
       </el-form>
       <template #footer>

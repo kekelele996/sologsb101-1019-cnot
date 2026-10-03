@@ -8,12 +8,17 @@ import type { Leaf } from '@/types/leaf'
 import type { Paper } from '@/types/paper'
 import type { RepairOrder } from '@/types/repairOrder'
 import type { Binding } from '@/types/binding'
+import type { DyeBath } from '@/types/dyeBath'
+import type { LeafIssuance } from '@/types/leafIssuance'
 import { BOOK_LEVEL_LABEL } from '@/types/book'
 import { BINDING_TYPE_LABEL, VOLUME_STATE_LABEL } from '@/types/volume'
 import { DAMAGE_TYPE_LABEL, LEAF_STATE_LABEL } from '@/types/leaf'
 import { PAPER_TYPE_LABEL, deltaELevel } from '@/types/paper'
 import { REPAIR_NAME_LABEL } from '@/types/repairOrder'
 import { BINDING_VERDICT_LABEL } from '@/types/binding'
+import { DYE_BATH_STATE_LABEL } from '@/types/dyeBath'
+import { ISSUANCE_STATE_LABEL } from '@/types/leafIssuance'
+import { occupancyMap } from './bathLedger'
 import type { RestoreSnapshot } from './db'
 
 /** 触发浏览器下载 */
@@ -55,6 +60,8 @@ export interface ExportContext {
   papers: Paper[]
   repairOrders: RepairOrder[]
   bindings: Binding[]
+  dyeBaths: DyeBath[]
+  leafIssuances: LeafIssuance[]
 }
 
 /** 验收归档清单文本：按古籍 → 册次 → 书叶 → 工序展开 */
@@ -94,6 +101,43 @@ export function buildArchiveReport(context: ExportContext): string {
     })
     lines.push('')
   })
+
+  // 附：染色间浴次账（按纸种 → 浴次）与余量
+  if (context.dyeBaths.length > 0) {
+    const occ = occupancyMap(context.dyeBaths, context.leafIssuances)
+    lines.push('附：染色间浴次账（容量 / 余量 / 染坏退回）')
+    ;(['bamboo', 'bark', 'xuan'] as const).forEach((paperType) => {
+      context.dyeBaths
+        .filter((bath) => bath.paperType === paperType)
+        .sort((a, b) => a.bathNo.localeCompare(b.bathNo, 'zh-Hans-CN'))
+        .forEach((bath) => {
+          const item = occ[bath.id]
+          lines.push(
+            `   ${bath.bathNo}　${PAPER_TYPE_LABEL[bath.paperType]}　${DYE_BATH_STATE_LABEL[bath.state]}` +
+              `　容量 ${bath.capacity} 张　已占 ${item?.occupied ?? 0} 张　余量 ${bath.legacy ? '—' : item?.remaining ?? 0} 张` +
+              `　染坏退回 ${item?.returned ?? 0} 张　染工 ${bath.dyer || '未填'}`
+          )
+        })
+    })
+    lines.push('')
+  }
+
+  // 附：修复工位领用账（按本（册）侧重记）
+  if (context.leafIssuances.length > 0) {
+    lines.push('附：修复工位领用账（浴次 / 张数 / 顶哪道补破）')
+    const bathNo = (id: string): string => context.dyeBaths.find((bath) => bath.id === id)?.bathNo ?? '?'
+    context.leafIssuances.forEach((item) => {
+      const leaf = context.leaves.find((row) => row.id === item.leafId)
+      const volume = leaf ? context.volumes.find((row) => row.id === leaf.volumeId) : undefined
+      const book = volume ? context.books.find((row) => row.id === volume.bookId) : undefined
+      lines.push(
+        `   ${book ? `《${book.title}》` : ''}第 ${volume?.volumeNo ?? '?'} 册 · 第 ${leaf?.leafNo ?? '?'} 叶` +
+          `　浴次 ${item.state === 'queued' ? '待排' : bathNo(item.bathId)}　${item.sheets} 张` +
+          `　顶${REPAIR_NAME_LABEL[item.purpose]}　${ISSUANCE_STATE_LABEL[item.state]}` +
+          `${item.returnedSheets > 0 ? `（退回 ${item.returnedSheets} 张：${item.returnReason}）` : ''}`
+      )
+    })
+  }
   return lines.join('\n')
 }
 
@@ -120,6 +164,9 @@ export function exportLeafLedgerCsv(context: ExportContext): string {
     '色差ΔE',
     'ΔE判定',
     '染色配方',
+    '领用浴次',
+    '领用张数',
+    '领用状态',
     '工序进度',
     '最近工序',
     '操作人'
@@ -138,6 +185,11 @@ export function exportLeafLedgerCsv(context: ExportContext): string {
           .sort((a, b) => a.seq - b.seq)
         const done = orders.filter((order) => order.state === 'done').length
         const last = orders[orders.length - 1]
+        // 工位领用账：只取该叶最近一条有效领用（退回条不算在领）
+        const issuance = context.leafIssuances
+          .filter((item) => item.leafId === leaf.id && item.state !== 'returned')
+          .sort((a, b) => b.createdAt - a.createdAt)[0]
+        const bath = issuance && issuance.bathId ? context.dyeBaths.find((item) => item.id === issuance.bathId) : undefined
         lines.push(
           [
             book.title,
@@ -153,6 +205,9 @@ export function exportLeafLedgerCsv(context: ExportContext): string {
             paper ? paper.deltaE : '',
             paper ? deltaELevel(paper.deltaE).label : '',
             paper ? paper.dyeRecipe : '',
+            issuance ? (issuance.state === 'queued' ? '待染排队' : bath?.bathNo ?? '浴次缺失') : '',
+            issuance ? issuance.sheets : '',
+            issuance ? ISSUANCE_STATE_LABEL[issuance.state] : '',
             `${done}/${orders.length}`,
             last ? REPAIR_NAME_LABEL[last.name] : '',
             last ? last.operator : ''

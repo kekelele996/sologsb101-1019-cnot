@@ -28,6 +28,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '补纸选配与染色', icon: 'Brush' }
   },
   {
+    path: '/baths',
+    name: 'bath-ledger',
+    component: () => import('@/pages/BathLedger.vue'),
+    meta: { title: '染色浴次与领用对账', icon: 'Coin' }
+  },
+  {
     path: '/repairs',
     name: 'repair-workflow',
     component: () => import('@/pages/RepairWorkflow.vue'),

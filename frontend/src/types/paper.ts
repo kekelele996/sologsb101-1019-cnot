@@ -20,6 +20,8 @@ export interface Paper {
   deltaE: number;
   /** 染色配方（v2 迁移时按纸种回填默认值） */
   dyeRecipe: string;
+  /** 所属染色浴次 id（v3 迁移：旧数据按纸种回填为历史浴次）；空串表示尚未入缸领用 */
+  bathId: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -70,5 +72,6 @@ export function createEmptyPaperDraft(leafId: string): PaperDraft {
     thicknessMm: 0.06,
     deltaE: 1.5,
     dyeRecipe: DEFAULT_DYE_RECIPE.bamboo,
+    bathId: '',
   };
 }

@@ -31,12 +31,15 @@ import {
 } from '@/types/leaf'
 import { BINDING_TYPE_LABEL, VOLUME_STATE_LABEL, isVolumeLocked } from '@/types/volume'
 import { useRepairStore } from '@/stores/repairStore'
+import { useDyeStore } from '@/stores/dyeStore'
+import { ISSUANCE_STATE_LABEL } from '@/types/leafIssuance'
 
 const route = useRoute()
 const router = useRouter()
 const bookStore = useBookStore()
 const leafStore = useLeafStore()
 const repairStore = useRepairStore()
+const dyeStore = useDyeStore()
 const { statOf } = useLeafStats()
 const paperTable = useIdbTable<Paper>((database) => database.papers, { sortByUpdatedAt: false })
 
@@ -193,11 +196,18 @@ async function addLeafRecord(leaf: Leaf): Promise<void> {
   ElMessage.info(`同一叶号可叠加多种破损：已带出第 ${leaf.leafNo} 叶`)
 }
 
-/** 该叶已选配的补纸文案（补纸选配页维护） */
+/** 该叶已选配的补纸 + 工位领用浴次（两本账都在书叶页给个摘要） */
 function paperText(leafId: string): string {
   const paper = paperTable.rows.value.find((item) => item.leafId === leafId)
   if (!paper) return '未选配'
-  return `${PAPER_TYPE_LABEL[paper.paperType]} · ΔE ${paper.deltaE}`
+  const latest = dyeStore
+    .issuancesOfLeaf(leafId)
+    .filter((item) => item.state !== 'returned')
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0]
+  if (!latest) return `${PAPER_TYPE_LABEL[paper.paperType]} · ΔE ${paper.deltaE} · 未领用`
+  if (latest.state === 'queued') return `${PAPER_TYPE_LABEL[paper.paperType]} · ΔE ${paper.deltaE} · 排队等下一缸`
+  const bathNo = dyeStore.bathById(latest.bathId)?.bathNo ?? '浴次缺失'
+  return `${PAPER_TYPE_LABEL[paper.paperType]} · ΔE ${paper.deltaE} · ${bathNo} ${latest.sheets}张 · ${ISSUANCE_STATE_LABEL[latest.state]}`
 }
 
 function phTag(ph: number): { label: string; color: string } {

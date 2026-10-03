@@ -15,7 +15,12 @@ import { useIdbTable } from '@/hooks/useIdbTable'
 import { useBookStore } from '@/stores/bookStore'
 import { useLeafStore } from '@/stores/leafStore'
 import { useRepairStore } from '@/stores/repairStore'
+import { useDyeStore } from '@/stores/dyeStore'
 import { DAMAGE_TYPE_LABEL } from '@/types/leaf'
+import {
+  ISSUANCE_STATE_LABEL,
+  type LeafIssuance
+} from '@/types/leafIssuance'
 import {
   ORDER_STATE_COLOR,
   ORDER_STATE_LABEL,
@@ -33,7 +38,13 @@ import { PAPER_TYPE_LABEL, type Paper } from '@/types/paper'
 const bookStore = useBookStore()
 const leafStore = useLeafStore()
 const repairStore = useRepairStore()
+const dyeStore = useDyeStore()
 const paperTable = useIdbTable<Paper>((database) => database.papers, { sortByUpdatedAt: false })
+
+/** 该叶工位领用账（按本侧重记的那本） */
+const leafIssuances = computed<LeafIssuance[]>(() =>
+  currentLeafId.value ? dyeStore.issuancesOfLeaf(currentLeafId.value).slice().sort((a, b) => b.updatedAt - a.updatedAt) : []
+)
 
 const FILTER_KEYS = ['name', 'state'] as const
 const url = useFilterQuery(FILTER_KEYS)
@@ -292,6 +303,15 @@ watchEffect(() => {
           补纸：{{ PAPER_TYPE_LABEL[currentPaper.paperType] }} · ΔE {{ currentPaper.deltaE }}
         </el-tag>
         <el-tag v-else type="warning" effect="plain" round>尚未选配补纸</el-tag>
+        <el-tag
+          v-for="item in leafIssuances.filter((row) => row.state !== 'returned')"
+          :key="item.id"
+          :type="item.state === 'queued' ? 'warning' : 'info'"
+          effect="plain"
+          round
+        >
+          领用：{{ item.state === 'queued' ? '排队等下一缸' : `${dyeStore.bathById(item.bathId)?.bathNo ?? '浴次缺失'} ${item.sheets} 张 · ${ISSUANCE_STATE_LABEL[item.state]}` }}
+        </el-tag>
       </div>
     </el-card>
 
